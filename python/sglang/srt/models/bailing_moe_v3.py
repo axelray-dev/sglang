@@ -906,6 +906,9 @@ class BailingKDA(KimiDeltaAttention):
             },
             v_head_dim=config.v_head_dim,
         )
+        kimi_linear_config._sglang_kda_weight_dtype = getattr(
+            config, "_sglang_kda_weight_dtype", torch.float32
+        )
         super().__init__(
             layer_id,
             hidden_size,

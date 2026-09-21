@@ -61,6 +61,27 @@ class TestGlm5NextBfgFusion(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_qkv_conv_dtype_follows_checkpoint_probe(self):
+        linear_attn_config = {
+            "head_dim": 8,
+            "num_heads": 4,
+            "short_conv_kernel_size": 4,
+        }
+        for dtype in (torch.bfloat16, torch.float32):
+            with self.subTest(dtype=dtype):
+                with get_parallel().override(
+                    tp_size=1, tp_rank=0, attn_tp_size=1, attn_tp_rank=0
+                ):
+                    attention = glm5_next.Glm5NextLinearAttention(
+                        layer_idx=0,
+                        hidden_size=16,
+                        config=SimpleNamespace(
+                            linear_attn_config=linear_attn_config,
+                            _sglang_kda_weight_dtype=dtype,
+                        ),
+                    )
+                self.assertEqual(attention.qkv_conv1d.weight.dtype, dtype)
+
     @torch.no_grad()
     def test_projection_loading_matches_unfused_reference(self):
         torch.manual_seed(42)

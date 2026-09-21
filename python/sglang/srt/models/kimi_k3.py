@@ -1723,7 +1723,7 @@ class KimiK3DeltaAttention(nn.Module):
             input_size=self.conv_size,
             output_sizes=[projection_size, projection_size, projection_size],
             bias=False,
-            params_dtype=torch.float32,
+            params_dtype=getattr(config, "_sglang_kda_weight_dtype", torch.float32),
             tp_rank=self.attn_tp_rank,
             tp_size=self.attn_tp_size,
             prefix=f"{prefix}.qkv_conv1d",

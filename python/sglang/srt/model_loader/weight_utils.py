@@ -86,6 +86,14 @@ RUNAI_STREAMER_TENSOR_ATTR = "_sglang_runai_streamer_tensor"
 _ROUTED_EXPERT_KEY_RE = re.compile(
     r"\.experts\.\d+\.(?:w[123]|down_proj|up_proj|gate_proj)\.weight$"
 )
+_KDA_CONV_WEIGHT_KEY_RE = re.compile(
+    r"(?:^|\.)q(?:kv)?_conv1d\.weight$|(?:^|\.)[kv]_conv1d\.weight$"
+)
+_SAFETENSORS_DTYPE_TO_TORCH_DTYPE = {
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
+    "F32": torch.float32,
+}
 
 
 def probe_routed_expert_weight_dtype(model_path: str) -> Optional[str]:
@@ -130,6 +138,47 @@ def probe_routed_expert_weight_dtype(model_path: str) -> Optional[str]:
             continue
         if _ROUTED_EXPERT_KEY_RE.search(k):
             return meta.get("dtype")
+    return None
+
+
+def probe_kda_weight_dtype(model_path: str) -> Optional[torch.dtype]:
+    """Return the dtype of a KDA short-convolution weight, when available.
+
+    Only safetensors headers are read. A missing local snapshot, non-safetensors
+    checkpoint, or unsupported storage dtype returns ``None`` so callers can
+    retain their existing fallback.
+    """
+    if os.path.isdir(model_path):
+        local_path = model_path
+    else:
+        local_path = find_local_repo_dir(model_path)
+        if not local_path or not os.path.isdir(local_path):
+            return None
+
+    index_file = os.path.join(local_path, "model.safetensors.index.json")
+    if os.path.exists(index_file):
+        with open(index_file) as f:
+            weight_map = json.load(f).get("weight_map", {}) or {}
+        shard_paths = [
+            os.path.join(local_path, shard)
+            for key, shard in weight_map.items()
+            if _KDA_CONV_WEIGHT_KEY_RE.search(key)
+        ]
+    else:
+        shard_paths = [
+            str(path) for path in sorted(Path(local_path).glob("*.safetensors"))
+        ]
+
+    for shard_path in dict.fromkeys(shard_paths):
+        if not os.path.isfile(shard_path):
+            continue
+        with open(shard_path, "rb") as f:
+            (header_len,) = struct.unpack("<Q", f.read(8))
+            header = json.loads(f.read(header_len))
+        for key, metadata in header.items():
+            if not _KDA_CONV_WEIGHT_KEY_RE.search(key):
+                continue
+            return _SAFETENSORS_DTYPE_TO_TORCH_DTYPE.get(metadata.get("dtype"))
     return None
 
 

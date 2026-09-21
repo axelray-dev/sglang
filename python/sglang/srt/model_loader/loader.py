@@ -119,6 +119,7 @@ from sglang.srt.model_loader.weight_utils import (
     maybe_add_mtp_safetensors,
     multi_thread_pt_weights_iterator,
     np_cache_weights_iterator,
+    probe_kda_weight_dtype,
     pt_weights_iterator,
     safetensors_weights_iterator,
     set_runai_streamer_env,
@@ -274,6 +275,44 @@ def _get_quantization_config(
     return None
 
 
+def _set_kda_weight_dtype(model_config: ModelConfig) -> None:
+    hf_config = model_config.hf_config
+    configs = [hf_config, getattr(hf_config, "text_config", None)]
+    if not any(
+        config is not None
+        and (
+            getattr(config, "linear_attn_config", None) is not None
+            or getattr(config, "short_conv_kernel_size", None) is not None
+        )
+        for config in configs
+    ):
+        return
+
+    try:
+        kda_weight_dtype = probe_kda_weight_dtype(model_config.model_path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to probe KDA short-convolution dtype for %s: %s",
+            model_config.model_path,
+            exc,
+        )
+        kda_weight_dtype = None
+
+    if kda_weight_dtype is None:
+        # Model construction precedes normal weight resolution, so remote
+        # checkpoints may not have a local header to inspect yet. Most KDA
+        # checkpoints follow the configured model dtype; Kimi-K3 is the known
+        # exception whose short-convolution weights are intentionally fp32.
+        kda_weight_dtype = (
+            torch.float32
+            if getattr(hf_config, "model_type", None) == "kimi_k3"
+            else model_config.dtype
+        )
+    for config in configs:
+        if config is not None:
+            config._sglang_kda_weight_dtype = kda_weight_dtype
+
+
 def _initialize_model(
     model_config: ModelConfig,
     load_config: LoadConfig,
@@ -281,6 +320,7 @@ def _initialize_model(
 ) -> nn.Module:
     """Initialize a model with the given configurations."""
     model_class, _ = get_model_architecture(model_config)
+    _set_kda_weight_dtype(model_config)
     # Decide the shared-experts-fusion question here, once per runner, before any
     # layer exists: this is the only place a model class is instantiated, and it
     # is the last point that still knows both the checkpoint's quantization and
